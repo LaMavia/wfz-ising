@@ -92,7 +92,7 @@ class Config:
   kb: float
 
   def __init__(self, size: int,  H: float, J: float, T: float, kb: float, probability=0.5):
-    self.spins, self.lattice = make_network_regular(size, size)# make_network2(size, size, probability)
+    self.spins, self.lattice = make_network2(size, size, probability) # make_network_regular(size, size)
     self.H = H
     self.J = J
     self.T = T
@@ -117,17 +117,21 @@ class Config:
   def calc_magnetisation(self) -> float:
     return sum([ si for column in self.spins for si in column ]) / sum([ len(column) for column in self.spins ])
 
-  def evolve(self):
+  def evolve_single_spin(self):
     spins_to_switch = []
 
-    for x, column in enumerate(self.spins):
-      for y, sk in enumerate(column):
-        if (rnd.random() < 0.5): continue
-        
-        dH = self.calc_delta_H((x, y))
+    # for x, column in enumerate(self.spins):
+    #   for y, sk in enumerate(column):
+    #     if (rnd.random() < 0.5): continue
 
-        if dH <= 0 or rnd.random() < np.exp(-dH/(self.kb * self.T)):
-          spins_to_switch.append((x, y))
+    for z in range(len(self.spins)):
+      x = rnd.choice(range(len(self.spins)))
+      y = rnd.choice(range(len(self.spins[0])))
+
+      dH = self.calc_delta_H((x, y))
+
+      if dH <= 0 or rnd.random() < np.exp(-dH/(self.kb * self.T)):
+        spins_to_switch.append((x, y))
 
     for x, y in spins_to_switch:
       self.spins[x][y] *= -1
@@ -144,14 +148,15 @@ class Config:
     for x, column in enumerate(self.lattice):
       for y, ns in enumerate(column):
         for xx, yy in ns:
-          ax.plot([x, xx], [y, yy], 'k.-')
+          ax.plot([x, xx], [y, yy], 'k-')
 
 if __name__ == '__main__':
-  d = 500
+  d = 100
   t = 0
-  c = Config(size=d, H=0, J=1, T=1.5, kb=1, probability=1/3)
+  c = Config(size=d, H=0.1, J=1, T=0.5, kb=1, probability=0.5)
 
   # plot_graph(d, c.lattice, 100)
+  c.plot_lattice()
 
   fig, ax = plt.subplots()
   im = ax.imshow(c.spins, 'binary')
@@ -160,7 +165,7 @@ if __name__ == '__main__':
   while True:
     t += 1
 
-    c.evolve()
+    c.evolve_single_spin()
 
     fig.suptitle(f't={t}, M={c.calc_magnetisation()}, H={c.H}')
     im.set_array(c.spins)
