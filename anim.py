@@ -7,6 +7,7 @@ import networkx as nx
 from dataclasses import dataclass
 from time import sleep
 from matplotlib import rc
+from sys import argv
 
 def bind_neighbours(w, h, ns):
   return [p for p in ns if 0 <= p[0] < w and 0 <= p[1] < h]
@@ -79,25 +80,42 @@ def make_network_regular(w: int, h: int, *_):
 
   return s, ns
 
+@dataclass
+class Stepper:
+  V_max: float
+  V_min: float
+  V_step: float
+
 class Config:
   """
   Single MC config
   """
 
+  size: int
+
   spins:   list[list[ int ]]
   lattice: list[list[ list[int] ]]
-  energy: float
+  energy:  float
+  time:    int
 
-  H: float
-  J: float
-  T: float
+  H:  float
+  J:  float
+  T:  float
   kb: float
 
   fig: plt.Figure
-  axs: dict[str | int, plt.Axes]
+  axs: dict[str, plt.Axes]
   name: str
 
-  def __init__(self, size: int,  H: float, J: float, T: float, kb: float, probability=0.5, mosaic: list[list[str]]=[['lattice', 'spins']], make_network=make_network2, name=''):
+  # Data points. |Hs| = |Ms| = |Ts|
+  Hs: list[float] # [H] list of 
+  Ms: list[float] # [M]
+  Ts: list[float] # [T]
+
+  H_stepper: Stepper
+
+
+  def __init__(self, size: int,  H: float, J: float, T: float, kb: float, probability=0.5, mosaic: list[list[str]]=[['lattice', 'spins']], make_network=make_network2, name='', H_step: float = 0.1, H_max: float = 1):
     self.spins, self.lattice = make_network(size, size, probability) # make_network2(size, size, probability) # make_network_regular(size, size)
     self.H = H
     self.J = J
@@ -107,6 +125,13 @@ class Config:
     self.name = name
 
     self.energy = self.calc_energy()
+    self.size = size
+    self.time = 0
+    self.H_stepper = Stepper(H_max, -H_max, H_step)
+
+    self.Hs = []
+    self.Ms = []
+    self.Ts = []
 
   """
   \Delta \mathcal{H} \{s_k -> -s_k\} = s_k (J \sum_{j \in \Delta_k} s_j + 2H)
@@ -118,14 +143,21 @@ class Config:
 
     return sk * ( self.J * sum(neighbours) + 2*self.H )
 
+
   def calc_energy(self) -> float:
     Hint = -1/2 * self.J * sum([ si * sum([self.spins[xx][yy] for xx, yy in self.lattice[x][y]]) for x, column in enumerate(self.spins) for y, si in enumerate(column) ])
     Hh   = -self.H * sum([si for column in self.spins for si in column])
 
     return Hint + Hh
 
+
   def calc_magnetisation(self) -> float:
     return sum([ si for column in self.spins for si in column ]) / sum([ len(column) for column in self.spins ])
+
+
+  ####################################
+  # 		       Evolution             #
+  ####################################
 
   def step_spin(self, position) -> list[tuple[int, int]]:
     x, y = position
@@ -136,10 +168,11 @@ class Config:
       return [(x, y)]
     return []
 
+
   def evolve_single_spin(self):
-    for z in range(len(self.spins)**2):
-      x = rnd.choice(range(len(self.spins)))
-      y = rnd.choice(range(len(self.spins[0])))
+    for z in range(self.size*self.size):
+      x = rnd.choice(range(self.size))
+      y = rnd.choice(range(self.size))
 
       for xx, yy in self.step_spin((x, y)):
         self.spins[x][y] *= -1
@@ -147,55 +180,98 @@ class Config:
 
 
   def evolve_all_spins(self):
-    for x, column in enumerate(self.spins):
-      for y, sk in enumerate(column):
+    for x in range(self.size):
+      for y in range(self.size):
         for xx, yy in self.step_spin((x, y)):
           self.spins[x][y] *= -1
           self.energy += self.calc_delta_H((xx,yy))
 
 
-  def plot_lattice(self):
-    h = len(self.spins)
-    w = len(self.spins[0]) 
+  ####################################
+  # 		       Plotting              #
+  ####################################
 
-    for x, column in enumerate(self.lattice):
-      for y, ns in enumerate(column):
-        for xx, yy in ns:
+  def plot_lattice(self):
+    for x in range(self.size):
+      for y in range(self.size):
+        for xx, yy in self.lattice[x][y]:
           self.axs['lattice'].plot([x, xx], [y, yy], 'k-')
 
-  def plot_spins(self, time):
-    self.fig.suptitle(f'{self.name}, t={time}, M={self.calc_magnetisation()}, H={self.H}')
+
+  def plot_spins(self):
+    self.fig.suptitle(f'{self.name}, t={self.time}, M={self.calc_magnetisation()}, H={self.H}')
     self.axs['spins'].imshow(self.spins, cmap='binary', vmin=-1, vmax=1)
     # plt.show(block=False)
 
+
+  def plot_magnetisation(self):
+    self.axs['magnetisation'].plot(self.Hs, self.Ms, 'b.-')
+
+
+  ####################################
+  # 		    Data Gathering           #
+  ####################################
+
+  def gather_data(self):
+    self.Ts.append(self.T)
+    self.Ms.append(self.calc_magnetisation())
+    self.Hs.append(self.H)
+
+  def simulate_step(self, director):
+    director(self)
+    self.time += 1
+
+    self.evolve_single_spin()
+
+
+def director(c: Config):
+  figname = (argv[1] if len(argv) > 1 else None) or f'out/general/{c.name}.png'
+  steps_per_H = 100
+
+  if c.H <= c.H_stepper.V_min:
+    c.H_stepper.V_step = np.abs(c.H_stepper.V_step)
+  elif c.H >= c.H_stepper.V_max:
+    c.H_stepper.V_step = -np.abs(c.H_stepper.V_step)
+
+  if c.time % steps_per_H == 0:
+    print(f'H: {c.H}, step: {c.H_stepper.V_step}')
+    c.gather_data()
+    c.plot_spins()
+    c.plot_magnetisation()
+    plt.pause(0.00001)
+    c.fig.savefig(figname)
+    c.H = round(c.H + c.H_stepper.V_step, 10)
+
+
+
 if __name__ == '__main__':
   sleep(2)
-  d = 500
-  t = 0
+  d = 100
   H = 0.00
   J = 1
   T = 0.5
   kb = 1
+  H_max = 0.3
   probability = 0.5
-  mosaic = [['spins']]
+  mosaic = [['spins'], ['magnetisation']]
 
-  Cir = Config(size=d, H=H, J=J, T=T, kb=kb, probability=probability, mosaic=mosaic, make_network=make_network2, name='irregular')
-  Cr  = Config(size=d, H=H, J=J, T=T, kb=kb, probability=probability, mosaic=mosaic, make_network=make_network_regular, name='regular')
+  #Cir = Config(size=d, H=H, J=J, T=T, kb=kb, probability=probability, mosaic=mosaic, make_network=make_network2, name='irregular')
+  Cir = Config(
+    size=d, H=H, J=J, T=T, kb=kb, probability=probability, mosaic=mosaic.copy(), 
+    make_network=make_network2, 
+    name='irregular', 
+    H_max=H_max, H_step=0.01
+    )
+
+  Cr = Config(
+    size=d, H=H, J=J, T=T, kb=kb, probability=probability, mosaic=mosaic.copy(), 
+    make_network=make_network_regular, 
+    name='regular', 
+    H_max=H_max, H_step=0.01
+    )
   
   plt.ion()
-  
 
-  while True:
-    t += 1
-
-    Cir.evolve_single_spin()
-    Cr.evolve_single_spin()
-
-    Cir.plot_spins(time=t)
-    Cr.plot_spins(time=t)
-    # im.set_array(c.spins)
-
-    plt.pause(0.0001)
-    # sleep(0.01)
-
-  plt.close()
+  while True:      
+    Cir.simulate_step(director)
+    Cr.simulate_step(director)
